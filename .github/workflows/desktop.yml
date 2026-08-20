@@ -19,62 +19,72 @@ jobs:
           xfce4 \
           xfce4-goodies \
           xfce4-session \
+          xfce4-terminal \
           xfconf \
           dbus-x11 \
           dbus \
+          dbus-user-session \
           xrdp \
           xorgxrdp \
-          net-tools
+          net-tools \
+          curl \
+          gnupg
 
     - name: Create RDP User
       run: |
         sudo useradd -m -s /bin/bash rdpuser || true
         echo "rdpuser:123456" | sudo chpasswd
 
-        sudo usermod -aG ssl-cert rdpuser
-        sudo usermod -aG rdpuser rdpuser
+        sudo usermod -aG ssl-cert rdpuser || true
 
-        # ساخت دایرکتوری تنظیمات XFCE
+        # ایجاد پوشه‌های لازم با مالکیت کاربر
         sudo mkdir -p /home/rdpuser/.config/xfce4/xfconf/xfce-perchannel-xml
+        sudo mkdir -p /home/rdpuser/.cache/sessions
         sudo chown -R rdpuser:rdpuser /home/rdpuser
 
-        # تنظیم فایل جلسه
+        # فایل .xsession ساده و دقیق
         echo "startxfce4" | sudo tee /home/rdpuser/.xsession > /dev/null
         sudo chmod +x /home/rdpuser/.xsession
         sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
 
-    - name: Fix XRDP Session (Critical Fix)
+    - name: Fix XRDP & D-Bus (Critical)
       run: |
-        # حذف/بکاپ اسکریپت قدیمی
-        sudo cp /etc/xrdp/startwm.sh /etc/xrdp/startwm.sh.bak || true
-
-        # نوشتن اسکریپت صحیح برای اجرای XFCE با D-Bus سالم
+        # ۱. حذف کامل اسکریپت قدیمی و نوشتن نسخهٔ سالم
         sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
-        #!/bin/bash
-        # رفع خطای xfconfdt و D-Bus
-        export XDG_SESSION_TYPE=x11
-        export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xfce4:/etc/xdg:/usr/share/xfce4:$XDG_CONFIG_DIRS
-        export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u rdpuser)/bus
+        #!/bin/sh
+        # --- Fix Failsafe / xfconf / D-Bus ---
+        [ -z "$USER" ] && USER=rdpuser
 
-        # اجرای DBUS و XFCE Session
-        if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-          dbus-launch --exit-with-session xfce4-session
-        else
-          xfce4-session
+        # ساخت دایرکتوری runtime (ضروری در GitHub Actions)
+        UID_VAL=$(id -u "$USER" 2>/dev/null || echo 1000)
+        export XDG_RUNTIME_DIR=/run/user/$UID_VAL
+        if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+          sudo mkdir -p "$XDG_RUNTIME_DIR"
+          sudo chmod 700 "$XDG_RUNTIME_DIR"
+          sudo chown "$UID_VAL":"$UID_VAL" "$XDG_RUNTIME_DIR" 2>/dev/null || true
         fi
+
+        # متغیرهای محیطی دقیق XFCE
+        export XDG_SESSION_TYPE=x11
+        export XDG_CURRENT_DESKTOP=XFCE
+        export XDG_SESSION_DESKTOP=xfce
+        export XDG_SESSION_CLASS=user
+        export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xfce4:/etc/xdg:/usr/share/xfce4:${XDG_CONFIG_DIRS:-/etc/xdg}
+
+        # راه‌اندازی D-Bus و XFCE (بدون Failsafe)
+        exec dbus-launch --exit-with-session startxfce4
         EOF
 
         sudo chmod +x /etc/xrdp/startwm.sh
 
-        # اطمینان از دسترسی پوشه /tmp برای XRDP
+        # ۲. اطمینان از دسترسی /tmp
         sudo chmod 1777 /tmp
 
-        # فعال‌سازی و ری‌استارت سرویس
-        sudo systemctl enable xrdp --now || true
-        sudo systemctl restart xrdp || sudo service xrdp restart || true
-
-        # اطمینان از اجرای xorgxrdp
+        # ۳. راه‌اندازی سرویس‌ها
+        sudo systemctl enable xrdp || true
         sudo systemctl enable xrdp-sesman || true
+        sudo systemctl restart xrdp || sudo service xrdp restart || true
+        sudo systemctl restart xrdp-sesman || sudo service xrdp-sesman restart || true
 
     - name: Install Tailscale
       run: |
@@ -84,26 +94,36 @@ jobs:
       env:
         TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
       run: |
-        # اگر قبلاً Auth شده بود خطا ندهد
         sudo tailscale up --authkey="${TS_AUTHKEY}" --accept-routes || sudo tailscale up --authkey="${TS_AUTHKEY}"
-        
+
         echo "================="
-        echo "Tailscale IP (for RDP):"
+        echo "RDP IP (Tailscale):"
         tailscale ip -4
         echo "================="
 
-    - name: Test
+    - name: Verify XRDP & Config
       run: |
-        echo "USER: rdpuser"
-        echo "PASSWORD: 123456"
-        echo "PORT STATUS:"
+        echo "=== User ==="
+        echo "rdpuser"
+
+        echo "=== Password ==="
+        echo "123456"
+
+        echo "=== Port 3389 ==="
         sudo ss -tlnp | grep 3389 || sudo netstat -tlnp | grep 3389 || true
+
+        echo "=== startwm.sh content ==="
+        cat /etc/xrdp/startwm.sh
+
+        echo "=== .xsession ==="
+        cat /home/rdpuser/.xsession
+
+        echo "=== XFCE Config Dirs ==="
+        ls -la /home/rdpuser/.config/xfce4 || true
 
     - name: Keep Alive
       run: |
-        # این حلقه باعث می‌شود Job تا timeout زنده بماند
-        # تا بتوانید از طریق Tailscale به RDP متصل شوید
         while true; do
-          echo "$(date): RDP SERVER ACTIVE"
+          echo "$(date '+%Y-%m-%d %H:%M:%S') - RDP ACTIVE | User: rdpuser | Pass: 123456 | IP: $(tailscale ip -4 || echo 'Check Tailscale')"
           sleep 300
         done
