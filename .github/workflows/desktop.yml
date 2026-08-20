@@ -19,6 +19,7 @@ jobs:
           xfce4 \
           xfce4-goodies \
           xfce4-session \
+          xfce4-settings \
           xfce4-terminal \
           xfconf \
           dbus-x11 \
@@ -28,63 +29,96 @@ jobs:
           xorgxrdp \
           net-tools \
           curl \
-          gnupg
+          libdbus-1-3 \
+          libdbus-glib-1-2
 
-    - name: Create RDP User
+    - name: Create RDP User & Session Env
       run: |
         sudo useradd -m -s /bin/bash rdpuser || true
         echo "rdpuser:123456" | sudo chpasswd
-
         sudo usermod -aG ssl-cert rdpuser || true
 
-        # ایجاد پوشه‌های لازم با مالکیت کاربر
+        # UID کاربر
+        RDP_UID=$(id -u rdpuser)
+        echo "RDP UID: $RDP_UID"
+
+        # پوشه Runtime (ضروری برای D-Bus در Actions)
+        sudo mkdir -p /run/user/$RDP_UID
+        sudo chown $RDP_UID:$RDP_UID /run/user/$RDP_UID
+        sudo chmod 700 /run/user/$RDP_UID
+
+        # پوشه تنظیمات XFCE
         sudo mkdir -p /home/rdpuser/.config/xfce4/xfconf/xfce-perchannel-xml
         sudo mkdir -p /home/rdpuser/.cache/sessions
         sudo chown -R rdpuser:rdpuser /home/rdpuser
 
-        # فایل .xsession ساده و دقیق
-        echo "startxfce4" | sudo tee /home/rdpuser/.xsession > /dev/null
+        # حذف کامل .xsession قدیمی (اگر وجود داشته باشد)
+        sudo rm -f /home/rdpuser/.xsession
+
+        # نوشتن .xsession نهایی با dbus-run-session (مهم‌ترین قسمت)
+        sudo tee /home/rdpuser/.xsession > /dev/null << 'EOF'
+        #!/bin/bash
+        # محیط دقیق XFCE برای رفع خطای failsafe و xfconfd
+        export XDG_SESSION_TYPE=x11
+        export XDG_SESSION_DESKTOP=xfce
+        export XDG_CURRENT_DESKTOP=XFCE
+        export XDG_SESSION_CLASS=user
+
+        # این خط دقیقاً خطای "XDG_CONFIG_DIRS is set incorrectly" را برطرف می‌کند
+        # حتماً باید /etc به صورت جداگانه در مسیر باشد
+        export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xfce4:/etc/xdg:/etc:/usr/share/xfce4
+
+        # دایرکتوری Runtime برای dbus
+        export XDG_RUNTIME_DIR=/run/user/$(id -u)
+        mkdir -p "$XDG_RUNTIME_DIR" || true
+        chmod 700 "$XDG_RUNTIME_DIR" || true
+
+        # حذف آدرس‌های قدیمی dbus که ممکن است خراب باشند
+        unset DBUS_SESSION_BUS_ADDRESS
+        unset SESSION_MANAGER
+
+        # راه‌اندازی XFCE با dbus-run-session (نه dbus-launch)
+        exec dbus-run-session -- startxfce4
+        EOF
+
         sudo chmod +x /home/rdpuser/.xsession
         sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
 
-    - name: Fix XRDP & D-Bus (Critical)
+    - name: Fix XRDP Start Script (Critical)
       run: |
-        # ۱. حذف کامل اسکریپت قدیمی و نوشتن نسخهٔ سالم
+        # بکاپ از فایل اصلی
+        sudo cp /etc/xrdp/startwm.sh /etc/xrdp/startwm.sh.bak.$(date +%s) || true
+
+        # نوشتن startwm.sh جدید که فقط .xsession را اجرا کند (بدون تداخل با Xsession)
         sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
         #!/bin/sh
-        # --- Fix Failsafe / xfconf / D-Bus ---
-        [ -z "$USER" ] && USER=rdpuser
-
-        # ساخت دایرکتوری runtime (ضروری در GitHub Actions)
-        UID_VAL=$(id -u "$USER" 2>/dev/null || echo 1000)
-        export XDG_RUNTIME_DIR=/run/user/$UID_VAL
-        if [ ! -d "$XDG_RUNTIME_DIR" ]; then
-          sudo mkdir -p "$XDG_RUNTIME_DIR"
-          sudo chmod 700 "$XDG_RUNTIME_DIR"
-          sudo chown "$UID_VAL":"$UID_VAL" "$XDG_RUNTIME_DIR" 2>/dev/null || true
+        # اجرای مستقیم .xsession کاربر rdpuser بدون تداخل با /etc/X11/Xsession
+        if [ -x /home/rdpuser/.xsession ]; then
+          exec /home/rdpuser/.xsession
+        else
+          # اگر به هر دلیلی .xsession نبود، با محیط پیش‌فرض اجرا شود
+          export XDG_SESSION_TYPE=x11
+          export XDG_SESSION_DESKTOP=xfce
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xfce4:/etc/xdg:/etc:/usr/share/xfce4
+          export XDG_RUNTIME_DIR=/run/user/$(id -u rdpuser)
+          exec dbus-run-session -- startxfce4
         fi
-
-        # متغیرهای محیطی دقیق XFCE
-        export XDG_SESSION_TYPE=x11
-        export XDG_CURRENT_DESKTOP=XFCE
-        export XDG_SESSION_DESKTOP=xfce
-        export XDG_SESSION_CLASS=user
-        export XDG_CONFIG_DIRS=/etc/xdg/xfce4:/etc/xfce4:/etc/xdg:/usr/share/xfce4:${XDG_CONFIG_DIRS:-/etc/xdg}
-
-        # راه‌اندازی D-Bus و XFCE (بدون Failsafe)
-        exec dbus-launch --exit-with-session startxfce4
         EOF
 
         sudo chmod +x /etc/xrdp/startwm.sh
 
-        # ۲. اطمینان از دسترسی /tmp
-        sudo chmod 1777 /tmp
+        # اجازه دسترسی به X برای هر کاربر (ضروری در Actions)
+        sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config || echo "allowed_users=anybody" | sudo tee -a /etc/X11/Xwrapper.config > /dev/null || true
 
-        # ۳. راه‌اندازی سرویس‌ها
+        # فعال‌سازی و ری‌استارت سرویس‌ها
         sudo systemctl enable xrdp || true
         sudo systemctl enable xrdp-sesman || true
         sudo systemctl restart xrdp || sudo service xrdp restart || true
         sudo systemctl restart xrdp-sesman || sudo service xrdp-sesman restart || true
+
+        # اطمینان از دسترسی /tmp
+        sudo chmod 1777 /tmp
 
     - name: Install Tailscale
       run: |
@@ -97,33 +131,37 @@ jobs:
         sudo tailscale up --authkey="${TS_AUTHKEY}" --accept-routes || sudo tailscale up --authkey="${TS_AUTHKEY}"
 
         echo "================="
-        echo "RDP IP (Tailscale):"
+        echo "RDP IP (Connect with RDP Client):"
         tailscale ip -4
+        echo "Port: 3389"
+        echo "User: rdpuser"
+        echo "Pass: 123456"
         echo "================="
 
-    - name: Verify XRDP & Config
+    - name: Final Verification
       run: |
         echo "=== User ==="
-        echo "rdpuser"
+        echo "rdpuser / 123456"
 
-        echo "=== Password ==="
-        echo "123456"
+        echo "=== .xsession exists? ==="
+        ls -la /home/rdpuser/.xsession
 
-        echo "=== Port 3389 ==="
-        sudo ss -tlnp | grep 3389 || sudo netstat -tlnp | grep 3389 || true
+        echo "=== .xsession content ==="
+        cat /home/rdpuser/.xsession
 
         echo "=== startwm.sh content ==="
         cat /etc/xrdp/startwm.sh
 
-        echo "=== .xsession ==="
-        cat /home/rdpuser/.xsession
+        echo "=== Port 3389 ==="
+        sudo ss -tlnp | grep 3389 || sudo netstat -tlnp | grep 3389 || true
 
-        echo "=== XFCE Config Dirs ==="
-        ls -la /home/rdpuser/.config/xfce4 || true
+        echo "=== Runtime Dir ==="
+        ls -la /run/user/$(id -u rdpuser) || true
 
     - name: Keep Alive
       run: |
-        while true; do
-          echo "$(date '+%Y-%m-%d %H:%M:%S') - RDP ACTIVE | User: rdpuser | Pass: 123456 | IP: $(tailscale ip -4 || echo 'Check Tailscale')"
+        while true
+        do
+          echo "$(date '+%Y-%m-%d %H:%M:%S') - RDP SERVER ACTIVE | User: rdpuser | Pass: 123456 | IP: $(tailscale ip -4 || echo 'N/A')"
           sleep 300
         done
