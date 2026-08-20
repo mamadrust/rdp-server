@@ -1,0 +1,27 @@
+name: RDP Desktop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Install Desktop
+      run: |
+        sudo apt update
+        sudo apt install -y xfce4 xfce4-goodies xrdp dbus-x11
+
+    - name: Setup xrdp
+      run: |
+        sudo adduser --disabled-password --gecos "" rdpuser
+        echo "rdpuser:12345678" | sudo chpasswd
+        sudo adduser rdpuser ssl-cert
+        echo "startxfce4" | sudo tee /home/rdpuser/.xsession
+        sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+        sudo systemctl restart xrdp
+
+    - name: Install Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
