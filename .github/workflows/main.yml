@@ -5,42 +5,67 @@ on:
 
 jobs:
   desktop:
+
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
 
-      - name: Install
-        run: sudo apt update && sudo apt install -y xfce4 xfce4-goodies dbus-x11 xrdp xorgxrdp
+    - name: Install packages
+      run: |
+        sudo apt update
+        sudo apt install -y xfce4 xfce4-goodies xrdp xorgxrdp dbus-x11
 
-      - name: User
-        run: |
-          sudo useradd -m rdpuser || true
-          echo "rdpuser:123456" | sudo chpasswd
-          sudo usermod -aG ssl-cert rdpuser
-          echo "startxfce4" | sudo tee /home/rdpuser/.xsession
-          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
 
-      - name: XRDP
-        run: |
-          sudo systemctl restart xrdp
-          sudo systemctl restart xrdp-sesman
+    - name: Create user
+      run: |
+        sudo adduser --disabled-password --gecos "" rdpuser
+        echo "rdpuser:123456" | sudo chpasswd
 
-      - name: Tailscale
-        run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
+        sudo usermod -aG ssl-cert rdpuser
 
-      - name: Connect
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-        run: |
-          sudo tailscale up --authkey=$TS_AUTHKEY
-          tailscale ip -4
+        echo "startxfce4" | sudo tee /home/rdpuser/.xsession
 
-      - name: Keep
-        run: |
-          while true
-          do
-            sleep 300
-          done
+        sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+
+
+    - name: Configure xrdp
+      run: |
+        sudo systemctl enable xrdp
+        sudo systemctl restart xrdp
+
+
+    - name: Install Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+
+
+    - name: Connect VPN
+      env:
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+
+      run: |
+        sudo tailscale up --authkey=$TS_AUTHKEY
+
+        echo "===================="
+        echo "SERVER IP:"
+        tailscale ip -4
+        echo "===================="
+
+
+    - name: Check
+      run: |
+        echo "USERNAME: rdpuser"
+        echo "PASSWORD: 123456"
+
+        echo "PORT:"
+        ss -tlnp | grep 3389 || true
+
+
+    - name: Keep alive
+      run: |
+        while true
+        do
+          echo "SERVER RUNNING"
+          sleep 300
+        done
