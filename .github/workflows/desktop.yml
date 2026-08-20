@@ -9,25 +9,25 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Set up job
-        uses: actions/checkout@v4
-
       - name: Install Desktop
         run: |
           sudo apt update
-          sudo apt install -y xfce4 xfce4-goodies dbus-x11
+          sudo apt install -y xfce4 xfce4-goodies dbus-x11 xrdp
 
-      - name: Install XRDP
+      - name: Create RDP User
         run: |
-          sudo apt install -y xrdp
-          sudo adduser xrdp ssl-cert
-          sudo systemctl enable xrdp || true
-          
-          sudo sed -i 's/console/console/' /etc/xrdp/startwm.sh
+          sudo useradd -m -s /bin/bash rdpuser
+          echo "rdpuser:123456" | sudo chpasswd
+          sudo usermod -aG ssl-cert rdpuser
+          echo "startxfce4" | sudo tee /home/rdpuser/.xsession
+          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
 
-          echo "startxfce4" > ~/.xsession
-
-          sudo systemctl restart xrdp || true
+      - name: Configure XRDP
+        run: |
+          sudo sed -i.bak '/test -x \/etc\/X11\/Xsession && exec \/etc\/X11\/Xsession/c\startxfce4' /etc/xrdp/startwm.sh
+          sudo adduser xrdp ssl-cert || true
+          sudo service xrdp restart
+          sudo service xrdp-sesman restart
 
       - name: Install Tailscale
         run: |
@@ -38,34 +38,22 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           sudo tailscale up --authkey=$TS_AUTHKEY
-          echo "Tailscale IP:"
+          echo "===== IP ====="
           tailscale ip -4
 
-      - name: Create RDP User
+      - name: Check RDP
         run: |
-          sudo useradd -m -s /bin/bash rdpuser
-          echo "rdpuser:123456" | sudo chpasswd
-          sudo usermod -aG ssl-cert rdpuser
-
-      - name: Start XRDP
-        run: |
-          sudo service xrdp restart || true
-          sudo service xrdp-sesman restart || true
-
-      - name: Debug RDP
-        run: |
-          echo "===== USER ====="
-          whoami
-          echo "===== XRDP PROCESS ====="
+          sleep 5
+          echo "===== XRDP ====="
           ps aux | grep xrdp
-          echo "===== PORT 3389 ====="
+          echo "===== PORT ====="
           ss -tlnp | grep 3389 || true
-          echo "===== TAILSCALE IP ====="
+          echo "===== IP ====="
           tailscale ip -4
 
       - name: Keep Alive
         run: |
           while true; do
-            echo "RDP server running..."
+            echo "RDP alive"
             sleep 300
           done
