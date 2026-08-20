@@ -4,105 +4,70 @@ on:
   workflow_dispatch:
 
 jobs:
-  desktop:
-    runs-on: ubuntu-latest
+  rdp:
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
     steps:
-
-      - name: Set up job
-        uses: actions/checkout@v4
-
-
-      - name: Install Desktop
+      - name: Install packages
         run: |
           sudo apt update
-          sudo apt install -y \
-            xfce4 \
-            xfce4-goodies \
-            xfce4-session \
-            dbus-x11 \
-            xorgxrdp \
-            xrdp
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+            xfce4 xfce4-goodies xfce4-session xfconf \
+            dbus dbus-x11 dbus-user-session \
+            xrdp xorgxrdp
 
-
-      - name: Configure RDP User
+      - name: Create user
+        env:
+          RDP_PASS: ${{ secrets.RDP_PASSWORD }}
         run: |
           sudo useradd -m -s /bin/bash rdpuser || true
-
-          echo "rdpuser:123456" | sudo chpasswd
-
+          echo "rdpuser:${RDP_PASS}" | sudo chpasswd
           sudo usermod -aG ssl-cert rdpuser
 
-          sudo mkdir -p /home/rdpuser
+      - name: Configure session
+        run: |
+          # پاک کردن تنظیمات قبلی
+          sudo rm -rf /home/rdpuser/.config/xfce4
+          sudo rm -rf /home/rdpuser/.cache/sessions
 
-          echo "xfce4-session" | sudo tee /home/rdpuser/.xsession
-
-          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+          # فایل جلسه ساده و تمیز
+          echo '#!/bin/sh' | sudo tee /home/rdpuser/.xsession
+          echo 'exec dbus-run-session startxfce4' | sudo tee -a /home/rdpuser/.xsession
 
           sudo chmod +x /home/rdpuser/.xsession
-
+          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
 
       - name: Configure XRDP
         run: |
-          sudo adduser xrdp ssl-cert || true
-
-          sudo sed -i 's/startwm.sh/#startwm.sh/' /etc/xrdp/startwm.sh || true
-
-          sudo bash -c 'cat > /etc/xrdp/startwm.sh <<EOF
+          # بازنویسی کامل startwm.sh
+          sudo tee /etc/xrdp/startwm.sh > /dev/null << 'EOF'
 #!/bin/sh
-
 unset DBUS_SESSION_BUS_ADDRESS
 unset XDG_RUNTIME_DIR
-
-startxfce4
-EOF'
+exec /home/rdpuser/.xsession
+EOF
 
           sudo chmod +x /etc/xrdp/startwm.sh
-
-          sudo systemctl enable xrdp || true
-
-          sudo systemctl restart xrdp || true
-
-          sudo systemctl restart xrdp-sesman || true
-
+          sudo systemctl restart xrdp
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
 
-
-      - name: Connect Tailscale
+      - name: Connect to Tailscale
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          sudo tailscale up --authkey=$TS_AUTHKEY
-
-          echo "======================"
-          echo "TAILSCALE IP:"
+          sudo tailscale up --authkey=$TS_AUTHKEY --hostname=rdp-github
+          echo "===================="
+          echo "RDP IP:"
           tailscale ip -4
-          echo "======================"
+          echo "===================="
 
-
-      - name: Check Server
+      - name: Keep session alive
         run: |
-          echo "USER:"
-          id rdpuser
-
-          echo "XRDP:"
-          ps aux | grep xrdp
-
-          echo "PORT:"
-          ss -tlnp | grep 3389 || true
-
-          echo "TAILSCALE:"
-          tailscale status
-
-
-      - name: Keep Alive
-        run: |
-          while true
-          do
-            echo "RDP SERVER RUNNING..."
+          while true; do
+            echo "RDP is running - $(date)"
             sleep 300
           done
