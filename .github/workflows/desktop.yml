@@ -25,3 +25,8 @@ jobs:
     - name: Install Tailscale
       run: |
         curl -fsSL https://tailscale.com/install.sh | sh
+
+    - name: Connect Tailscale
+      run: |
+        sudo tailscale up --authkey=${{ secrets.TS_AUTHKEY }}
+        tailscale ip
