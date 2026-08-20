@@ -9,51 +9,57 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Install Desktop
-        run: |
-          sudo apt update
-          sudo apt install -y xfce4 xfce4-goodies dbus-x11 xrdp
 
-      - name: Create RDP User
-        run: |
-          sudo useradd -m -s /bin/bash rdpuser
-          echo "rdpuser:123456" | sudo chpasswd
-          sudo usermod -aG ssl-cert rdpuser
-          echo "startxfce4" | sudo tee /home/rdpuser/.xsession
-          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+    - name: Install Desktop
+      run: |
+        sudo apt update
+        sudo apt install -y xfce4 xfce4-goodies dbus-x11 xrdp
 
-      - name: Configure XRDP
-        run: |
-          sudo sed -i.bak '/test -x \/etc\/X11\/Xsession && exec \/etc\/X11\/Xsession/c\startxfce4' /etc/xrdp/startwm.sh
-          sudo adduser xrdp ssl-cert || true
-          sudo service xrdp restart
-          sudo service xrdp-sesman restart
+    - name: Create RDP User
+      run: |
+        sudo useradd -m -s /bin/bash rdpuser
+        echo "rdpuser:123456" | sudo chpasswd
+        sudo usermod -aG ssl-cert rdpuser
+        
+        sudo -u rdpuser bash -c 'echo startxfce4 > /home/rdpuser/.xsession'
+        sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
 
-      - name: Install Tailscale
-        run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
+    - name: Configure XRDP
+      run: |
+        sudo sed -i 's/allowed_users=.*/allowed_users=anybody/' /etc/X11/Xwrapper.config || true
+        
+        sudo systemctl restart xrdp
+        sudo systemctl restart xrdp-sesman
 
-      - name: Connect Tailscale
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-        run: |
-          sudo tailscale up --authkey=$TS_AUTHKEY
-          echo "===== IP ====="
-          tailscale ip -4
+    - name: Install Tailscale
+      run: |
+        curl -fsSL https://tailscale.com/install.sh | sh
 
-      - name: Check RDP
-        run: |
-          sleep 5
-          echo "===== XRDP ====="
-          ps aux | grep xrdp
-          echo "===== PORT ====="
-          ss -tlnp | grep 3389 || true
-          echo "===== IP ====="
-          tailscale ip -4
+    - name: Connect Tailscale
+      env:
+        TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+      run: |
+        sudo tailscale up --authkey=$TS_AUTHKEY
+        echo "IP:"
+        tailscale ip -4
 
-      - name: Keep Alive
-        run: |
-          while true; do
-            echo "RDP alive"
-            sleep 300
-          done
+    - name: Debug
+      run: |
+        echo USER:
+        id rdpuser
+        
+        echo XRDP:
+        ps aux | grep xrdp
+        
+        echo PORT:
+        ss -tlnp | grep 3389
+        
+        echo TAILSCALE:
+        tailscale ip -4
+
+    - name: Keep Alive
+      run: |
+        while true; do
+          echo "RDP running"
+          sleep 300
+        done
